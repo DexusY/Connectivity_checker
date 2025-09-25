@@ -50,8 +50,7 @@ A Python trio that advertises a TCP intake over mDNS, records connected display 
 ## Prerequisites
 
 - Python 3.10+
-- [`zeroconf`](https://pypi.org/project/zeroconf/) 
-- [`pycryptodome`]() 
+- [`zeroconf`](https://pypi.org/project/zeroconf/) - To implement mDNS protocol
 - A reachable LAN interface matching the `LOCAL_IP` value
 
 ---
