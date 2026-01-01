@@ -17,11 +17,12 @@ def string_to_number(text):
 SETI = string_to_number('SETI')
  
 class Server_two:
-    def __init__(self, local_ip, port, connection_queue):
+    def __init__(self, local_ip, port, connection_queue, dev_num):
         self.HOST = local_ip
         self.PORT = port
         self.password = b"alamakotagigantaalamakotagiganta"
         self.connection_queue = connection_queue
+        self.dev_num = dev_num
         self.connections = {}
         self.lock = threading.Lock()
         self.server_socket = None
