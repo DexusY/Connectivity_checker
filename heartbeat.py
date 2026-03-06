@@ -1,6 +1,5 @@
 import time
 import logging
-import socket
 
 def run_round_robin_heartbeat(server, interval=0.1):
     logging.info(f"Starting Round Robin data transmission. Interval: {interval}s")

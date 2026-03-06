@@ -1,93 +1,132 @@
-# pings — Local Device Monitor & mDNS Announcer - IoT Device Management Server
+# Connectivity Checker
 
-A Python-based multi-threaded server designed to manage, discover, and monitor a fleet of networked devices (referred to as "Nameplates"). This project demonstrates the implementation of low-level TCP socket communication, service discovery (mDNS), and concurrent connection handling.
-
----
+A multi-threaded Python server for managing, discovering, and monitoring a fleet of networked IoT devices (referred to as "Nameplates"). It combines low-level TCP socket communication, mDNS service discovery, and a live console dashboard to give you a real-time view of which devices are reachable on the network.
 
 ## Table of Contents
+
 - [Overview](#overview)
-- [Key Features](#key-features)
+- [Features](#features)
 - [Architecture](#architecture)
-- [Installation & Usage](#installation--usage)
+- [Detection Algorithm](#detection-algorithm)
+- [Installation](#installation)
 - [Configuration](#configuration)
 
 
----
-
 ## Overview
 
-This application acts as a central command unit for IoT devices. It listens for incoming TCP connections, registers devices via their MAC addresses, and maintains a "heartbeat" to ensure connection stability. It also features a console-based dashboard to visualize real-time connectivity status.
+The server acts as a central hub for IoT devices. It announces itself on the local network via mDNS so devices can find it automatically, accepts their TCP connections, and then continuously verifies their reachability using two independent mechanisms: an application-level heartbeat and OS-level ICMP pings.
 
-The system is designed to handle up to 45 devices (configurable) simultaneously using a threaded architecture.
 
----
+## Features
 
-## Key Features
+- **TCP Socket Server** — handles raw socket connections and binary data streams
+- **mDNS Discovery** — broadcasts availability via Zeroconf (`_nameplate2._tcp.local.`), so devices find the server without manual configuration
+- **Heartbeat Mechanism** — background thread sends periodic keep-alive bytes to all connected devices in round-robin order
+- **ICMP Ping Checker** — independently verifies network-layer reachability for each device
+- **Live Dashboard** — console UI that refreshes every 0.5s showing connected and disconnected devices with their IPs
+- **Binary Protocol** — supports `struct`-packed command frames (e.g. `SetErrorTimeout`)
 
-* **TCP Socket Server:** Handles raw socket connections, managing binary data streams and command packets.
-* **Service Discovery (mDNS):** Broadcasts the server's presence using Zeroconf (`_nameplate2._tcp.local.`), allowing devices to find the server automatically.
-* **Concurrency:** Utilizes `threading` and `Locks` to handle multiple client connections, heartbeats, and UI updates safely.
-* **Heartbeat Mechanism:** A background thread sends periodic keep-alive signals (`0x00` byte) to connected devices.
-* **Real-time Dashboard:** A console UI that refreshes dynamically to show Connected vs. Disconnected devices and their IPs.
-* **Network Diagnostics:** Includes a background "pinger" that utilizes the OS ICMP ping command to verify device reachability alongside the TCP session.
-* **Binary Protocol Handling:** Implements `struct` packing/unpacking for command generation (e.g., `SetErrorTimeout`) and CRC32 verification.
-
----
 
 ## Architecture
 
-The project is modularized into the following components:
+```
+devices.py  (entry point)
+├── server.py      — TCP server, handshake parsing, connection registry
+├── mDNS.py        — Zeroconf service registration
+└── heartbeat.py   — round-robin keep-alive sender
+```
 
-1.  **`devices.py` (Entry Point):**
-    * Initializes the application, loads configuration, and starts the dashboard thread.
-    * Manages the main loop and coordinates the display of device statuses.
-2.  **`server.py`:**
-    * `Server_two`: The core class responsible for binding sockets and accepting connections.
-    * Parses incoming handshakes to extract MAC addresses.
-    * Handles specific command protocols (e.g., setting error timeouts via binary structs).
-3.  **`mDNS.py`:**
-    * Uses `zeroconf` to register the service `_nameplate2._tcp.local`, enabling automatic discovery on the local network.
-4.  **`heartbeat.py`:**
-    * Runs a Round-Robin routine to send keep-alive packets to all active sockets, handling broken pipes and connection resets gracefully.
+```mermaid
+graph LR
+    A[devices.py] --> B[server.py]
+    A --> C[mDNS.py]
+    A --> D[heartbeat.py]
+    C --> E[zeroconf]
+    B --> F[stdlib: socket / struct]
+    D --> F
+```
 
----
+Module responsibilities:
 
-## Installation & Usage
+- `devices.py` — entry point; loads config, starts all threads, runs the dashboard loop
+- `server.py` — binds the TCP socket, accepts connections, extracts MAC addresses from handshakes, exposes the connection registry
+- `mDNS.py` — registers the service with Zeroconf so devices can locate the server via mDNS
+- `heartbeat.py` — iterates over all open sockets and sends a null byte to each; detects dead connections via socket errors
 
-1. Prerequisites
- - Python 3.8+: The project utilizes f-strings and modern threading features.
 
- - Network Access: The server requires permission to bind to a local socket and broadcast mDNS packets.
+## Detection Algorithm
 
-2. Installation
-Clone the repository and install the required dependencies (specifically zeroconf). For Linux environments, it is recommended to create and activate a virtual environment (venv) to keep dependencies isolated:
+Connectivity status is determined by combining two independent checks that run in parallel background threads.
+
+**Step 1 — Device discovery via mDNS**
+
+On startup, the server registers a `_nameplate2._tcp.local.` service record using Zeroconf. Devices on the same LAN query for this service type and learn the server's IP and port automatically.
+
+**Step 2 — TCP handshake and MAC registration**
+
+When a device connects, it sends a 60-byte handshake. The server decodes the payload and extracts the MAC address starting at byte offset 3. This MAC becomes the unique key for that device in the connection registry.
+
+**Step 3 — Application-layer heartbeat (TCP liveness)**
+
+A dedicated thread loops over all registered sockets in round-robin order and sends a single null byte (`0x00`) to each. If the send raises `BrokenPipeError` or `ConnectionResetError`, the TCP session is considered dead and a warning is logged. The interval between sends is configurable (default 0.1s).
+
+```
+for each device in round-robin order:
+    send 0x00
+    if BrokenPipeError or ConnectionResetError:
+        log warning (connection lost)
+    sleep(interval)
+```
+
+**Step 4 — Network-layer reachability check (ICMP ping)**
+
+Independently, a background pinger thread queries each device's IP using the OS `ping` command once per second. This catches cases where the TCP session is still technically open but the device is no longer reachable on the network (e.g. it lost its IP or the route changed).
+
+```
+for each device:
+    run: ping -c 1 -W 1 <ip>
+    record result as True/False
+sleep(1s) then repeat
+```
+
+**Step 5 — Dashboard**
+
+Once the expected number of devices (`COUNT` in config) are connected, the dashboard activates. It reads the latest ping results and splits devices into "connected" and "not connected" columns, refreshing every 0.5 seconds. If a device drops below the expected count, the dashboard pauses and waits for it to reconnect.
+
+
+## Installation
+
+Clone the repository and install dependencies. Using a virtual environment is recommended:
 
 ```bash
-git clone https://github.com/DexusY/Connectivity_checker.git && cd Connectivity_checker
+git clone https://github.com/DexusY/Connectivity_checker.git
+cd Connectivity_checker
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Usage
-Execute the main script, which initializes the TCP server, mDNS broadcaster, and the console dashboard:
+Run the server:
 
 ```bash
 python devices.py
 ```
 
----
 
 ## Configuration
 
-The application is controlled via `settings.conf`. You can adjust the network bindings and the expected number of devices.
+All settings live in `settings.conf`. Edit this file before starting the server.
 
 ```ini
 [NETWORK]
-HOST_IP = 192.168.1.100  # Must match your machine's local IPv4 address (e.g., 192.168.1.x) for mDNS to function correctly.
-PORT = 8080              # The TCP listening port
+HOST_IP = 192.168.1.100  ; your machine's local IPv4 address
+PORT = 8088              ; TCP listening port (also advertised via mDNS)
 
 [DEVICES]
-COUNT = 45               # Expected number of devices for the dashboard
+COUNT = 45               ; number of devices the dashboard waits for
 
+[SERVER]
+PASSWORD = changeme      ; password used during device handshake
+```
 
+The `HOST_IP` must match the network interface you want devices to connect through. Running `ip addr` or `ifconfig` will show your available interfaces and their addresses.
