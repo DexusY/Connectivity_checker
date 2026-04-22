@@ -9,16 +9,15 @@ import configparser
 
 from mDNS import start_mdns
 from server import Server_two as Server
-from heartbeat import run_round_robin_heartbeat
+from heartbeat import run_broadcast_heartbeat
 
 config = configparser.ConfigParser()
 config.read('settings.conf')
 try:
     LOCAL_IP = config['NETWORK']['HOST_IP']
     PORT = int(config['NETWORK']['PORT'])
-    dev_num = int(config['DEVICES']['COUNT'])
     PASSWORD = config['SERVER']['PASSWORD'].encode('utf-8')
-    logging.info(f"Loaded config: ip={LOCAL_IP}, port={PORT}, devices_amount={dev_num}")
+    logging.info(f"Loaded config: ip={LOCAL_IP}, port={PORT}")
 except KeyError as e:
     logging.error(f"Configuration file error: missing key {e}")
     sys.exit(1)
@@ -82,35 +81,30 @@ def server_two_menu(server):
     pinger_thread.start()
 
     while True:
-        devices = list(server.connections.keys())
-        if len(devices) == dev_num:
-            while len(server.connections) == dev_num:
-                connected = []
-                not_connected = []
+        connected = []
+        not_connected = []
 
-                with ping_results_lock:
-                    for device_key, conn in list(server.connections.items()):
-                        ip = _get_ip_from_conn(conn, device_key)
-                        is_online = ping_results.get(device_key, False)
-                        entry = f"{device_key} ({ip})"
-                        if is_online:
-                            connected.append(entry)
-                        else:
-                            not_connected.append(entry)
+        with ping_results_lock:
+            for device_key, conn in list(server.connections.items()):
+                ip = _get_ip_from_conn(conn, device_key)
+                is_online = ping_results.get(device_key, False)
+                entry = f"{device_key} ({ip})"
+                if is_online:
+                    connected.append(entry)
+                else:
+                    not_connected.append(entry)
 
-                os.system('clear' if os.name == 'posix' else 'cls')
-                print("\n" + "="*60)
-                print(f"{'CONNECTED (' + str(len(connected)) + ')':<30} | {'NOT CONNECTED (' + str(len(not_connected)) + ')':<25}")
-                print("="*60)
-                max_rows = max(len(connected), len(not_connected))
-                for i in range(max_rows):
-                    left = connected[i] if i < len(connected) else ""
-                    right = not_connected[i] if i < len(not_connected) else ""
-                    print(f"{left:<30} | {right:<25}")
-                print("="*60)
-                time.sleep(0.5)
-        else:
-            time.sleep(1)
+        os.system('clear' if os.name == 'posix' else 'cls')
+        print("\n" + "="*60)
+        print(f"{'CONNECTED (' + str(len(connected)) + ')':<30} | {'NOT CONNECTED (' + str(len(not_connected)) + ')':<25}")
+        print("="*60)
+        max_rows = max(len(connected), len(not_connected))
+        for i in range(max_rows):
+            left = connected[i] if i < len(connected) else ""
+            right = not_connected[i] if i < len(not_connected) else ""
+            print(f"{left:<30} | {right:<25}")
+        print("="*60)
+        time.sleep(0.5)
 
 
 def start_mdns_service(started_event):
@@ -125,7 +119,7 @@ def start_server_two(server, started_event):
 
 def main(server):
     threading.Thread(target=server_two_menu, args=(server,), daemon=True).start()
-    threading.Thread(target=run_round_robin_heartbeat, args=(server, 0.1), daemon=True).start()
+    threading.Thread(target=run_broadcast_heartbeat, args=(server, 1.0), daemon=True).start()
     while True:
         time.sleep(1)
 
@@ -133,7 +127,7 @@ def main(server):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     connection_queue = queue.Queue()
-    server = Server(LOCAL_IP, PORT, connection_queue, dev_num, PASSWORD)
+    server = Server(LOCAL_IP, PORT, connection_queue, PASSWORD)
 
     mdns_started = threading.Event()
     server_started = threading.Event()
